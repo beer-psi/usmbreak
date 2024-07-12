@@ -8,3 +8,8 @@ Usage:
 ```
 usmbreak <enc | dec> <input> <output> <key>
 ```
+
+### Credits
+
+Encryption/decryption routines were referenced from [donmai-me](https://github.com/donmai-me)'s
+[WannaCRI](https://github.com/donmai-me/WannaCRI) library for handling CRIWARE media formats.
