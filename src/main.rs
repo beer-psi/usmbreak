@@ -1,4 +1,9 @@
-use std::{fs::{self, File}, io::{Read, Write}, path::PathBuf, process};
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    path::PathBuf,
+    process,
+};
 
 use clap::{Parser, Subcommand};
 use dialoguer::Confirm;
@@ -73,7 +78,7 @@ fn main() {
     match cli.command {
         Commands::Encrypt { .. } => pb.set_prefix("Encrypting"),
         Commands::Decrypt { .. } => pb.set_prefix("Decrypting"),
-    };    
+    };
 
     while fin.read_exact(&mut packet_meta).is_ok() {
         fout.write_all(&packet_meta).unwrap();
@@ -90,9 +95,12 @@ fn main() {
         if payload_type != 0 || (packet_type != "@SFV" && packet_type != "@SFA") {
             let reference = Read::by_ref(&mut fin);
             let remaining_size = size - 0x08;
-            
+
             buffer.clear();
-            reference.take(remaining_size as u64).read_to_end(&mut buffer).expect("Didn't read enough");
+            reference
+                .take(remaining_size as u64)
+                .read_to_end(&mut buffer)
+                .expect("Didn't read enough");
             fout.write_all(&buffer[..remaining_size]).unwrap();
             pb.inc(remaining_size as u64);
             continue;
@@ -106,7 +114,10 @@ fn main() {
             let remaining_header_length = (payload_offset - 0x08) as usize;
 
             buffer.clear();
-            reference.take(remaining_header_length as u64).read_to_end(&mut buffer).expect("Didn't read enough");
+            reference
+                .take(remaining_header_length as u64)
+                .read_to_end(&mut buffer)
+                .expect("Didn't read enough");
             fout.write_all(&buffer[..remaining_header_length]).unwrap();
             pb.inc(remaining_header_length as u64);
         }
@@ -116,12 +127,15 @@ fn main() {
             let reference = Read::by_ref(&mut fin);
 
             buffer.clear();
-            reference.take(payload_size as u64).read_to_end(&mut buffer).unwrap();        
+            reference
+                .take(payload_size as u64)
+                .read_to_end(&mut buffer)
+                .unwrap();
         }
 
         if packet_type == "@SFV" {
             rolling[..].copy_from_slice(&video_key);
-            
+
             if let Commands::Encrypt { .. } = cli.command {
                 encrypt_video_packet(&mut buffer, &video_key, &mut rolling).unwrap();
             } else {
@@ -142,7 +156,10 @@ fn main() {
             let reference = Read::by_ref(&mut fin);
 
             buffer.clear();
-            reference.take(padding_size as u64).read_to_end(&mut buffer).unwrap();
+            reference
+                .take(padding_size as u64)
+                .read_to_end(&mut buffer)
+                .unwrap();
             fout.write_all(&buffer[..padding_size as usize]).unwrap();
             pb.inc(padding_size as u64);
         }
@@ -163,7 +180,7 @@ struct Cli {
 #[derive(Debug, Parser, PartialEq, Eq)]
 struct CommandOpts {
     input: PathBuf,
-    
+
     output: PathBuf,
 
     #[arg(value_parser = valid_enc_key)]
@@ -178,13 +195,13 @@ enum Commands {
     #[command(alias = "enc")]
     Encrypt {
         #[command(flatten)]
-        opts: CommandOpts
+        opts: CommandOpts,
     },
 
     #[command(alias = "dec")]
     Decrypt {
         #[command(flatten)]
-        opts: CommandOpts
+        opts: CommandOpts,
     },
 }
 
@@ -196,7 +213,11 @@ enum UsmBreakError {
 
 const AUDIO_T: [u8; 4] = [0x55, 0x52, 0x55, 0x43];
 
-fn generate_keys(cipher_key: u64, video_key: &mut [u8], audio_key: &mut [u8]) -> Result<(), UsmBreakError> {
+fn generate_keys(
+    cipher_key: u64,
+    video_key: &mut [u8],
+    audio_key: &mut [u8],
+) -> Result<(), UsmBreakError> {
     if video_key.len() < 0x40 || audio_key.len() < 0x20 {
         return Err(UsmBreakError::BufferTooShort);
     }
@@ -250,7 +271,11 @@ fn generate_keys(cipher_key: u64, video_key: &mut [u8], audio_key: &mut [u8]) ->
     Ok(())
 }
 
-fn decrypt_video_packet(packet: &mut [u8], video_key: &[u8], rolling: &mut [u8]) -> Result<(), UsmBreakError> {
+fn decrypt_video_packet(
+    packet: &mut [u8],
+    video_key: &[u8],
+    rolling: &mut [u8],
+) -> Result<(), UsmBreakError> {
     if video_key.len() < 0x40 || rolling.len() < 0x40 {
         return Err(UsmBreakError::KeyTooShort);
     }
@@ -258,7 +283,7 @@ fn decrypt_video_packet(packet: &mut [u8], video_key: &[u8], rolling: &mut [u8])
     let encrypted_part_size = packet.len() - 0x40;
 
     if encrypted_part_size < 0x200 {
-        return Ok(())
+        return Ok(());
     }
 
     for i in 0x100..encrypted_part_size {
@@ -274,7 +299,11 @@ fn decrypt_video_packet(packet: &mut [u8], video_key: &[u8], rolling: &mut [u8])
     Ok(())
 }
 
-fn encrypt_video_packet(packet: &mut [u8], video_key: &[u8], rolling: &mut [u8]) -> Result<(), UsmBreakError> {
+fn encrypt_video_packet(
+    packet: &mut [u8],
+    video_key: &[u8],
+    rolling: &mut [u8],
+) -> Result<(), UsmBreakError> {
     if video_key.len() < 0x40 || rolling.len() < 0x40 {
         return Err(UsmBreakError::KeyTooShort);
     }
@@ -282,7 +311,7 @@ fn encrypt_video_packet(packet: &mut [u8], video_key: &[u8], rolling: &mut [u8])
     let encrypted_part_size = packet.len() - 0x40;
 
     if encrypted_part_size < 0x200 {
-        return Ok(())
+        return Ok(());
     }
 
     for i in 0..0x100 {
@@ -308,7 +337,7 @@ fn apply_audio_packet(packet: &mut [u8], audio_key: &[u8]) -> Result<(), UsmBrea
     let packet_length = packet.len();
 
     if packet_length <= 0x140 {
-        return Ok(())
+        return Ok(());
     }
 
     for i in 0x140..packet_length {

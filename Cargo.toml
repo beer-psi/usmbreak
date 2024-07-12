@@ -7,7 +7,6 @@ description = "Encrypt and decrypt CRIWARE USM files"
 readme = "README.md"
 repository = "https://github.com/beerpiss/usmbreak"
 license = "0BSD"
-license-file = "LICENSE"
 
 [dependencies]
 clap = { version = "4.5.9", features = ["derive"] }
