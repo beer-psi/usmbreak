@@ -63,7 +63,7 @@ fn main() -> Result<()> {
         Commands::Decrypt { ref opts } => opts,
     };
 
-    if opts.key >= MAX_EFFECTIVE_KEY {
+    if opts.key > MAX_EFFECTIVE_KEY {
         println!("Warning: Only the lower 56 bits of the key will be used.");
     }
 
