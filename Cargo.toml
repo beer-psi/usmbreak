@@ -1,6 +1,6 @@
 [package]
 name = "usmbreak"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["beerpsi <beerpsi@duck.com>"]
 edition = "2021"
 description = "Encrypt and decrypt CRIWARE USM files"

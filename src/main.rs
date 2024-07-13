@@ -1,12 +1,8 @@
 use std::{
-    fmt::Display,
-    fs::{self, File},
-    io::{BufReader, BufWriter, Read, Write},
-    path::PathBuf,
-    process,
+    ffi::CStr, fmt::Display, fs::{self, File}, io::{BufReader, BufWriter, Read, Write}, path::PathBuf, process
 };
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -129,6 +125,8 @@ fn main() -> Result<()> {
         Commands::Decrypt { .. } => pb.set_prefix("Decrypting"),
     };
 
+    let mut hca_do_not_touch = false;
+
     while reader.read_exact(&mut packet_meta).is_ok() {
         writer.write_all(&packet_meta)?;
         pb.inc(packet_meta.len() as u64);
@@ -146,7 +144,9 @@ fn main() -> Result<()> {
         // Skip and write directly to output if
         // - not a stream payload (payload_type 0)
         // - not an audio/video/alpha packet
-        if payload_type != 0 || (!is_audio_packet && !is_video_packet && !is_alpha_packet) {
+        if (payload_type != 0 && payload_type != 1)
+            || (!is_audio_packet && !is_video_packet && !is_alpha_packet)
+        {
             let reference = Read::by_ref(&mut reader);
             let remaining_size = size - 0x08;
 
@@ -186,7 +186,72 @@ fn main() -> Result<()> {
                 .read_to_end(&mut buffer)?;
         }
 
-        if is_video_packet || is_alpha_packet {
+        // Metadata packet. We parse just enough of the AUDIO_HDRINFO table to determine if we're dealing
+        // with HCA audio instead of ADX, which is encrypted separately.
+        if is_audio_packet && payload_type == 1 {
+            if &buffer[..4] != b"@UTF" {
+                return Err(anyhow!("Error: Received metadata packet type, but the payload was not a table?"));
+            }
+
+            let strings_offset = u32::from_be_bytes(buffer[12..16].try_into()?) as usize;
+            let byte_array_offset = u32::from_be_bytes(buffer[16..20].try_into()?) as usize;
+            let table_name_offset = u32::from_be_bytes(buffer[20..24].try_into()?) as usize;
+
+            let string_array = &buffer[8 + strings_offset..8 + byte_array_offset];
+            let table_name = CStr::from_bytes_until_nul(&string_array[table_name_offset..])?;
+
+            if table_name == c"AUDIO_HDRINFO" {
+                let table_data_offset = u32::from_be_bytes(buffer[8..12].try_into()?) as usize;
+                let num_columns = u16::from_be_bytes(buffer[24..26].try_into()?) as usize;
+                let unique_array_size_per_page = u16::from_be_bytes(buffer[26..28].try_into()?) as usize;
+                let num_rows = u32::from_be_bytes(buffer[28..32].try_into()?) as usize;
+                let table_data = &buffer[8 + table_data_offset..8 + table_data_offset + unique_array_size_per_page * num_rows];
+                let column_metadata = &buffer[0x20..8 + table_data_offset];
+
+                if num_rows > 1 {
+                    return Err(anyhow!("AUDIO_HDRINFO table has more than one row?!"));
+                }
+
+                let mut table_data_offset = 0;
+
+                for i in 0..num_columns {
+                    let element_name_offset = u32::from_be_bytes(column_metadata[i * 5 + 1..i * 5 + 5].try_into()?) as usize;
+                    let element_name = CStr::from_bytes_until_nul(&string_array[element_name_offset..])?;
+                    let element_type = column_metadata[i * 5] & 0x1F;
+                    let element_recurrence = column_metadata[i * 5] >> 5;
+
+                    // We can just not care.
+                    if element_recurrence == 1 {
+                        continue;
+                    }
+
+                    let element_size = match element_type {
+                        0x10 | 0x11 => 1,  // i8, u8
+                        0x12 | 0x13 => 2,  // i16, u16
+                        0x14 | 0x15 | 0x18 | 0x1A => 4,  // i32, u32, f32, c-string
+                        0x16 | 0x17 | 0x19 | 0x1B => 8,  // i64, u64, f64?, array of bytes
+                        _ => return Err(anyhow!("Unknown table element type {element_type:0x}.")),
+                    };
+                    
+                    if element_name != c"audio_codec" {
+                        table_data_offset += element_size;
+                        continue
+                    }
+
+                    // Non-recurring I8
+                    if element_type != 0x10 || element_recurrence != 2 {
+                        return Err(anyhow!("Invalid AUDIO_HDRINFO table: audio_codec is not a non recurring I8."));
+                    }
+
+                    let encoding = table_data[table_data_offset];
+
+                    hca_do_not_touch = encoding == 4;
+                    break;
+                }
+            }
+
+            writer.write_all(&buffer[..payload_size])?;
+        } else if is_video_packet || is_alpha_packet {
             rolling[..].copy_from_slice(&video_key);
 
             if let Commands::Encrypt { .. } = cli.command {
@@ -197,11 +262,13 @@ fn main() -> Result<()> {
 
             writer.write_all(&buffer[..payload_size])?;
         } else if is_audio_packet {
-            crypt_audio_packet(&mut buffer, &audio_key)?;
+            // HCA encryption is done separately.
+            if !hca_do_not_touch {
+                crypt_audio_packet(&mut buffer, &audio_key)?;
+            }
             writer.write_all(&buffer[..payload_size])?;
         } else {
-            // Well, it *should* be unreachable.
-            unreachable!()
+            writer.write_all(&buffer[..payload_size])?;
         }
 
         pb.inc(payload_size as u64);
