@@ -11,6 +11,50 @@ use clap::{Parser, Subcommand};
 use dialoguer::Confirm;
 use indicatif::{ProgressBar, ProgressStyle};
 
+/// Video and audio encryption for USM files uses separate keys, derived from a shared key.
+/// The derivation process only uses the lower 56 bits, meaning `0x10EF_1234_5678_ABCD`
+/// is equivalent to `0x00EF_1234_5678_ABCD`.
+/// 
+/// While it is not forbidden, emit a warning if the user decides to use a key larger than
+/// the effective maximum.
+const MAX_EFFECTIVE_KEY: u64 = 0x00FF_FFFF_FFFF_FFFF;
+
+/// The size of the derived video key.
+const VIDEO_KEY_SIZE: usize = 0x40;
+
+/// The size of the derived audio key.
+const AUDIO_KEY_SIZE: usize = 0x20;
+
+/// The minimum size for a video packet to have encrypted content. Any video packets smaller
+/// than this size are left unencrypted.
+const MIN_VIDEO_ENCRYPT_SIZE: usize = 0x240;
+
+/// The minimum size for an audio packet to have encrypted content. Any audio packets smaller
+/// than this size are left unecrypted.
+const MIN_AUDIO_ENCRYPT_SIZE: usize = 0x141;
+
+/// The size of an USM packet header. It includes:
+/// - Packet type ([FourCC](https://en.wikipedia.org/wiki/FourCC))
+/// - Data size (4 bytes, big endian)
+/// - Unknown (1 byte)
+/// - Offset of packet payload (1 byte)
+/// - Size of packet padding (2 bytes, big endian)
+/// - Channel number (1 byte)
+/// - Unknown 2 bytes
+/// - Data type (1 byte)
+///   - 0: Stream
+///   - 1: Header
+///   - 2: Section end
+///   - 3: Metadata
+const PACKET_HEADER_SIZE: usize = 16;
+
+/// Used for mixing in the audio key on odd-indexed bytes.
+const AUDIO_T: [u8; 4] = *b"URUC";
+
+/// Initial size of in-memory buffer for encrypting/decrypting content,
+/// and buffer size for the [`std::io::BufReader`]/[`std::io::BufWriter`].
+const BUFFER_SIZE: usize = 65535;
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
@@ -19,7 +63,7 @@ fn main() -> Result<()> {
         Commands::Decrypt { ref opts } => opts,
     };
 
-    if opts.key >= 72057594037927936 {
+    if opts.key >= MAX_EFFECTIVE_KEY {
         println!("Warning: Only the lower 56 bits of the key will be used.");
     }
 
@@ -48,18 +92,18 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut video_key = [0u8; 0x40];
-    let mut audio_key = [0u8; 0x20];
+    let mut video_key = [0u8; VIDEO_KEY_SIZE];
+    let mut audio_key = [0u8; AUDIO_KEY_SIZE];
 
     generate_keys(opts.key, &mut video_key, &mut audio_key)?;
 
     let video_key = video_key;
     let audio_key = audio_key;
-    let mut rolling = [0u8; 0x40];
+    let mut rolling = [0u8; VIDEO_KEY_SIZE];
 
     let fin = File::open(&opts.input)?;
     let filesize = fin.metadata()?.len();
-    let mut reader = BufReader::with_capacity(65535, fin);
+    let mut reader = BufReader::with_capacity(BUFFER_SIZE, fin);
 
     if let Some(parent) = opts.output.parent() {
         if !parent.exists() {
@@ -71,9 +115,9 @@ fn main() -> Result<()> {
     
     fout.set_len(filesize)?;
     
-    let mut writer = BufWriter::with_capacity(65535, fout);
-    let mut buffer: Vec<u8> = Vec::with_capacity(65535);
-    let mut packet_meta = [0u8; 16];
+    let mut writer = BufWriter::with_capacity(BUFFER_SIZE, fout);
+    let mut buffer: Vec<u8> = Vec::with_capacity(BUFFER_SIZE);
+    let mut packet_meta = [0u8; PACKET_HEADER_SIZE];
     let pb = ProgressBar::new(filesize)
         .with_style(
             ProgressStyle::default_bar()
@@ -243,15 +287,12 @@ impl Display for UsmBreakError {
     }
 }
 
-// URUC in bytes.
-const AUDIO_T: [u8; 4] = [0x55, 0x52, 0x55, 0x43];
-
 fn generate_keys(
     cipher_key: u64,
     video_key: &mut [u8],
     audio_key: &mut [u8],
 ) -> Result<(), UsmBreakError> {
-    if video_key.len() < 0x40 || audio_key.len() < 0x20 {
+    if video_key.len() < VIDEO_KEY_SIZE || audio_key.len() < AUDIO_KEY_SIZE {
         return Err(UsmBreakError::BufferTooShort);
     }
 
@@ -309,15 +350,17 @@ fn decrypt_video_packet(
     video_key: &[u8],
     rolling: &mut [u8],
 ) -> Result<(), UsmBreakError> {
-    if video_key.len() < 0x40 || rolling.len() < 0x40 {
+    if video_key.len() < VIDEO_KEY_SIZE || rolling.len() < VIDEO_KEY_SIZE {
         return Err(UsmBreakError::KeyTooShort);
     }
 
-    let encrypted_part_size = packet.len() - 0x40;
+    let packet_length = packet.len();
 
-    if encrypted_part_size < 0x200 {
+    if packet_length < MIN_VIDEO_ENCRYPT_SIZE {
         return Ok(());
     }
+
+    let encrypted_part_size = packet_length - 0x40;
 
     for i in 0x100..encrypted_part_size {
         let packet_idx = 0x40 + i;
@@ -342,15 +385,17 @@ fn encrypt_video_packet(
     video_key: &[u8],
     rolling: &mut [u8],
 ) -> Result<(), UsmBreakError> {
-    if video_key.len() < 0x40 || rolling.len() < 0x40 {
+    if video_key.len() < VIDEO_KEY_SIZE || rolling.len() < VIDEO_KEY_SIZE {
         return Err(UsmBreakError::KeyTooShort);
     }
 
-    let encrypted_part_size = packet.len() - 0x40;
+    let packet_length = packet.len();
 
-    if encrypted_part_size < 0x200 {
+    if packet_length < MIN_VIDEO_ENCRYPT_SIZE {
         return Ok(());
     }
+
+    let encrypted_part_size = packet_length - 0x40;
 
     for i in 0..0x100 {
         let key_idx = i % 0x20;
@@ -372,13 +417,13 @@ fn encrypt_video_packet(
 }
 
 fn crypt_audio_packet(packet: &mut [u8], audio_key: &[u8]) -> Result<(), UsmBreakError> {
-    if audio_key.len() < 0x20 {
+    if audio_key.len() < AUDIO_KEY_SIZE {
         return Err(UsmBreakError::KeyTooShort);
     }
 
     let packet_length = packet.len();
 
-    if packet_length <= 0x140 {
+    if packet_length < MIN_AUDIO_ENCRYPT_SIZE {
         return Ok(());
     }
 
