@@ -133,14 +133,14 @@ fn main() -> Result<()> {
         writer.write_all(&packet_meta)?;
         pb.inc(packet_meta.len() as u64);
 
-        let packet_type = std::str::from_utf8(&packet_meta[..4])?;
+        let packet_type = &packet_meta[..4];
         let size = u32::from_be_bytes(packet_meta[4..8].try_into()?) as usize;
         let payload_offset = packet_meta[9];
         let padding_size = u16::from_be_bytes(packet_meta[10..12].try_into()?);
         let payload_type = packet_meta[15];
 
-        let is_audio_packet = packet_type == "@SFA";
-        let is_video_packet = packet_type == "@SFV";
+        let is_audio_packet = packet_type == b"@SFA";
+        let is_video_packet = packet_type == b"@SFV";
 
         // Skip and write directly to output if
         // - not a stream payload (payload_type 0)
@@ -199,7 +199,8 @@ fn main() -> Result<()> {
             crypt_audio_packet(&mut buffer, &audio_key)?;
             writer.write_all(&buffer[..payload_size])?;
         } else {
-            panic!("Another packet type got through the filter? {packet_type}");
+            // Well, it *should* be unreachable.
+            unreachable!()
         }
 
         pb.inc(payload_size as u64);
