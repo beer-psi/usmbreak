@@ -299,48 +299,46 @@ fn generate_keys(
     }
 
     let cipher_key = cipher_key.to_le_bytes();
-    let mut key = [0u8; 0x20];
 
-    key[0x00] = cipher_key[0];
-    key[0x01] = cipher_key[1];
-    key[0x02] = cipher_key[2];
-    key[0x03] = cipher_key[3].wrapping_sub(0x34);
-    key[0x04] = cipher_key[4].wrapping_add(0xF9);
-    key[0x05] = cipher_key[5] ^ 0x13;
-    key[0x06] = cipher_key[6].wrapping_add(0x61);
-    key[0x07] = key[0x00] ^ 0xFF;
-    key[0x08] = key[0x01].wrapping_add(key[0x02]);
-    key[0x09] = key[0x01].wrapping_sub(key[0x07]);
-    key[0x0A] = key[0x02] ^ 0xFF;
-    key[0x0B] = key[0x01] ^ 0xFF;
-    key[0x0C] = key[0x0B].wrapping_add(key[0x09]);
-    key[0x0D] = key[0x08].wrapping_sub(key[0x03]);
-    key[0x0E] = key[0x0D] ^ 0xFF;
-    key[0x0F] = key[0x0A].wrapping_sub(key[0x0B]);
-    key[0x10] = key[0x08].wrapping_sub(key[0x0F]);
-    key[0x11] = key[0x10] ^ key[0x07];
-    key[0x12] = key[0x0F] ^ 0xFF;
-    key[0x13] = key[0x03] ^ 0x10;
-    key[0x14] = key[0x04].wrapping_sub(0x32);
-    key[0x15] = key[0x05].wrapping_add(0xED);
-    key[0x16] = key[0x06] ^ 0xF3;
-    key[0x17] = key[0x13].wrapping_sub(key[0x0F]);
-    key[0x18] = key[0x15].wrapping_add(key[0x07]);
-    key[0x19] = (0x21u8).wrapping_sub(key[0x13]);
-    key[0x1A] = key[0x14] ^ key[0x17];
-    key[0x1B] = key[0x16].wrapping_add(key[0x16]);
-    key[0x1C] = key[0x17].wrapping_add(0x44);
-    key[0x1D] = key[0x03].wrapping_add(key[0x04]);
-    key[0x1E] = key[0x05].wrapping_sub(key[0x16]);
-    key[0x1F] = key[0x1D] ^ key[0x13];
+    video_key[0x00] = cipher_key[0];
+    video_key[0x01] = cipher_key[1];
+    video_key[0x02] = cipher_key[2];
+    video_key[0x03] = cipher_key[3].wrapping_sub(0x34);
+    video_key[0x04] = cipher_key[4].wrapping_add(0xF9);
+    video_key[0x05] = cipher_key[5] ^ 0x13;
+    video_key[0x06] = cipher_key[6].wrapping_add(0x61);
+    video_key[0x07] = video_key[0x00] ^ 0xFF;
+    video_key[0x08] = video_key[0x01].wrapping_add(video_key[0x02]);
+    video_key[0x09] = video_key[0x01].wrapping_sub(video_key[0x07]);
+    video_key[0x0A] = video_key[0x02] ^ 0xFF;
+    video_key[0x0B] = video_key[0x01] ^ 0xFF;
+    video_key[0x0C] = video_key[0x0B].wrapping_add(video_key[0x09]);
+    video_key[0x0D] = video_key[0x08].wrapping_sub(video_key[0x03]);
+    video_key[0x0E] = video_key[0x0D] ^ 0xFF;
+    video_key[0x0F] = video_key[0x0A].wrapping_sub(video_key[0x0B]);
+    video_key[0x10] = video_key[0x08].wrapping_sub(video_key[0x0F]);
+    video_key[0x11] = video_key[0x10] ^ video_key[0x07];
+    video_key[0x12] = video_key[0x0F] ^ 0xFF;
+    video_key[0x13] = video_key[0x03] ^ 0x10;
+    video_key[0x14] = video_key[0x04].wrapping_sub(0x32);
+    video_key[0x15] = video_key[0x05].wrapping_add(0xED);
+    video_key[0x16] = video_key[0x06] ^ 0xF3;
+    video_key[0x17] = video_key[0x13].wrapping_sub(video_key[0x0F]);
+    video_key[0x18] = video_key[0x15].wrapping_add(video_key[0x07]);
+    video_key[0x19] = (0x21u8).wrapping_sub(video_key[0x13]);
+    video_key[0x1A] = video_key[0x14] ^ video_key[0x17];
+    video_key[0x1B] = video_key[0x16].wrapping_add(video_key[0x16]);
+    video_key[0x1C] = video_key[0x17].wrapping_add(0x44);
+    video_key[0x1D] = video_key[0x03].wrapping_add(video_key[0x04]);
+    video_key[0x1E] = video_key[0x05].wrapping_sub(video_key[0x16]);
+    video_key[0x1F] = video_key[0x1D] ^ video_key[0x13];
 
     for i in 0..0x20 {
-        video_key[i] = key[i];
-        video_key[0x20 + i] = key[i] ^ 0xFF;
+        video_key[0x20 + i] = !video_key[i];
         audio_key[i] = if i % 2 != 0 {
             AUDIO_T[(i >> 1) % 4]
         } else {
-            key[i] ^ 0xFF
+            !video_key[i]
         };
     }
 
