@@ -3,6 +3,9 @@
 Command-line tool to encrypt and decrypt CRIWARE USM files. Encoding it is left
 as an exercise for the reader.
 
+**HCA audio is not handled by this program. Please encrypt your HCA audio before
+muxing the USM.**
+
 Usage:
 
 ```
