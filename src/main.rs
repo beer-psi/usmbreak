@@ -141,11 +141,12 @@ fn main() -> Result<()> {
 
         let is_audio_packet = packet_type == b"@SFA";
         let is_video_packet = packet_type == b"@SFV";
+        let is_alpha_packet = packet_type == b"@ALP";
 
         // Skip and write directly to output if
         // - not a stream payload (payload_type 0)
-        // - not an audio/video packet
-        if payload_type != 0 || (!is_audio_packet && !is_video_packet) {
+        // - not an audio/video/alpha packet
+        if payload_type != 0 || (!is_audio_packet && !is_video_packet && !is_alpha_packet) {
             let reference = Read::by_ref(&mut reader);
             let remaining_size = size - 0x08;
 
@@ -185,7 +186,7 @@ fn main() -> Result<()> {
                 .read_to_end(&mut buffer)?;
         }
 
-        if is_video_packet {
+        if is_video_packet || is_alpha_packet {
             rolling[..].copy_from_slice(&video_key);
 
             if let Commands::Encrypt { .. } = cli.command {
@@ -226,8 +227,8 @@ fn valid_enc_key(s: &str) -> Result<u64, String> {
     clap_num::maybe_hex_range(s, 1, u64::MAX)
 }
 
-/// Program to encrypt/decrypt USMs
 #[derive(Parser, Debug)]
+#[command(version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
