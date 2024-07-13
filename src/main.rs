@@ -1,5 +1,10 @@
 use std::{
-    ffi::CStr, fmt::Display, fs::{self, File}, io::{BufReader, BufWriter, Read, Write}, path::PathBuf, process
+    ffi::CStr,
+    fmt::Display,
+    fs::{self, File},
+    io::{BufReader, BufWriter, Read, Write},
+    path::PathBuf,
+    process,
 };
 
 use anyhow::{anyhow, Result};
@@ -10,7 +15,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 /// Video and audio encryption for USM files uses separate keys, derived from a shared key.
 /// The derivation process only uses the lower 56 bits, meaning `0x10EF_1234_5678_ABCD`
 /// is equivalent to `0x00EF_1234_5678_ABCD`.
-/// 
+///
 /// While it is not forbidden, emit a warning if the user decides to use a key larger than
 /// the effective maximum.
 const MAX_EFFECTIVE_KEY: u64 = 0x00FF_FFFF_FFFF_FFFF;
@@ -50,6 +55,32 @@ const AUDIO_T: [u8; 4] = *b"URUC";
 /// Initial size of in-memory buffer for encrypting/decrypting content,
 /// and buffer size for the [`std::io::BufReader`]/[`std::io::BufWriter`].
 const BUFFER_SIZE: usize = 65535;
+
+const PACKET_TYPE_VIDEO: [u8; 4] = *b"@SFV";
+const PACKET_TYPE_AUDIO: [u8; 4] = *b"@SFA";
+const PACKET_TYPE_ALPHA: [u8; 4] = *b"@ALP";
+const PACKET_TYPE_TABLE: [u8; 4] = *b"@UTF";
+
+const PAYLOAD_TYPE_STREAM: u8 = 0;
+const PAYLOAD_TYPE_HEADER: u8 = 1;
+
+const ELEMENT_RECURRENCE_YES: u8 = 1;
+const ELEMENT_RECURRENCE_NO: u8 = 2;
+
+const AUDIO_CODEC_HCA: u8 = 4;
+
+const TABLE_ROW_TYPE_I8: u8 = 0x10;
+const TABLE_ROW_TYPE_U8: u8 = 0x11;
+const TABLE_ROW_TYPE_I16: u8 = 0x12;
+const TABLE_ROW_TYPE_U16: u8 = 0x13;
+const TABLE_ROW_TYPE_I32: u8 = 0x14;
+const TABLE_ROW_TYPE_U32: u8 = 0x15;
+const TABLE_ROW_TYPE_I64: u8 = 0x16;
+const TABLE_ROW_TYPE_U64: u8 = 0x17;
+const TABLE_ROW_TYPE_F32: u8 = 0x18;
+const TABLE_ROW_TYPE_F64: u8 = 0x19;
+const TABLE_ROW_TYPE_CSTR: u8 = 0x1A;
+const TABLE_ROW_TYPE_BYTES: u8 = 0x1B;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -108,9 +139,9 @@ fn main() -> Result<()> {
     }
 
     let fout = File::create(&opts.output)?;
-    
+
     fout.set_len(filesize)?;
-    
+
     let mut writer = BufWriter::with_capacity(BUFFER_SIZE, fout);
     let mut buffer: Vec<u8> = Vec::with_capacity(BUFFER_SIZE);
     let mut packet_meta = [0u8; PACKET_HEADER_SIZE];
@@ -137,14 +168,14 @@ fn main() -> Result<()> {
         let padding_size = u16::from_be_bytes(packet_meta[10..12].try_into()?);
         let payload_type = packet_meta[15];
 
-        let is_audio_packet = packet_type == b"@SFA";
-        let is_video_packet = packet_type == b"@SFV";
-        let is_alpha_packet = packet_type == b"@ALP";
+        let is_audio_packet = packet_type == PACKET_TYPE_AUDIO;
+        let is_video_packet = packet_type == PACKET_TYPE_VIDEO;
+        let is_alpha_packet = packet_type == PACKET_TYPE_ALPHA;
 
         // Skip and write directly to output if
         // - not a stream payload (payload_type 0)
         // - not an audio/video/alpha packet
-        if (payload_type != 0 && payload_type != 1)
+        if (payload_type != PAYLOAD_TYPE_STREAM && payload_type != PAYLOAD_TYPE_HEADER)
             || (!is_audio_packet && !is_video_packet && !is_alpha_packet)
         {
             let reference = Read::by_ref(&mut reader);
@@ -188,9 +219,11 @@ fn main() -> Result<()> {
 
         // Metadata packet. We parse just enough of the AUDIO_HDRINFO table to determine if we're dealing
         // with HCA audio instead of ADX, which is encrypted separately.
-        if is_audio_packet && payload_type == 1 {
-            if &buffer[..4] != b"@UTF" {
-                return Err(anyhow!("Error: Received metadata packet type, but the payload was not a table?"));
+        if is_audio_packet && payload_type == PAYLOAD_TYPE_HEADER {
+            if buffer[..4] != PACKET_TYPE_TABLE {
+                return Err(anyhow!(
+                    "Error: Received metadata packet type, but the payload was not a table?"
+                ));
             }
 
             let strings_offset = u32::from_be_bytes(buffer[12..16].try_into()?) as usize;
@@ -203,9 +236,10 @@ fn main() -> Result<()> {
             if table_name == c"AUDIO_HDRINFO" {
                 let table_data_offset = u32::from_be_bytes(buffer[8..12].try_into()?) as usize;
                 let num_columns = u16::from_be_bytes(buffer[24..26].try_into()?) as usize;
-                let unique_array_size_per_page = u16::from_be_bytes(buffer[26..28].try_into()?) as usize;
+                let row_data_size = u16::from_be_bytes(buffer[26..28].try_into()?) as usize;
                 let num_rows = u32::from_be_bytes(buffer[28..32].try_into()?) as usize;
-                let table_data = &buffer[8 + table_data_offset..8 + table_data_offset + unique_array_size_per_page * num_rows];
+                let table_data = &buffer
+                    [8 + table_data_offset..8 + table_data_offset + row_data_size * num_rows];
                 let column_metadata = &buffer[0x20..8 + table_data_offset];
 
                 if num_rows > 1 {
@@ -215,37 +249,46 @@ fn main() -> Result<()> {
                 let mut table_data_offset = 0;
 
                 for i in 0..num_columns {
-                    let element_name_offset = u32::from_be_bytes(column_metadata[i * 5 + 1..i * 5 + 5].try_into()?) as usize;
-                    let element_name = CStr::from_bytes_until_nul(&string_array[element_name_offset..])?;
+                    let element_name_offset =
+                        u32::from_be_bytes(column_metadata[i * 5 + 1..i * 5 + 5].try_into()?)
+                            as usize;
+                    let element_name =
+                        CStr::from_bytes_until_nul(&string_array[element_name_offset..])?;
                     let element_type = column_metadata[i * 5] & 0x1F;
                     let element_recurrence = column_metadata[i * 5] >> 5;
 
                     // We can just not care.
-                    if element_recurrence == 1 {
+                    if element_recurrence == ELEMENT_RECURRENCE_YES {
                         continue;
                     }
 
                     let element_size = match element_type {
-                        0x10 | 0x11 => 1,  // i8, u8
-                        0x12 | 0x13 => 2,  // i16, u16
-                        0x14 | 0x15 | 0x18 | 0x1A => 4,  // i32, u32, f32, c-string
-                        0x16 | 0x17 | 0x19 | 0x1B => 8,  // i64, u64, f64?, array of bytes
+                        TABLE_ROW_TYPE_I8 | TABLE_ROW_TYPE_U8 => 1,
+                        TABLE_ROW_TYPE_I16 | TABLE_ROW_TYPE_U16 => 2,
+                        TABLE_ROW_TYPE_I32 | TABLE_ROW_TYPE_U32 | TABLE_ROW_TYPE_F32
+                        | TABLE_ROW_TYPE_CSTR => 4,
+                        TABLE_ROW_TYPE_I64 | TABLE_ROW_TYPE_U64 | TABLE_ROW_TYPE_F64
+                        | TABLE_ROW_TYPE_BYTES => 8,
                         _ => return Err(anyhow!("Unknown table element type {element_type:0x}.")),
                     };
-                    
+
                     if element_name != c"audio_codec" {
                         table_data_offset += element_size;
-                        continue
+                        continue;
                     }
 
                     // Non-recurring I8
-                    if element_type != 0x10 || element_recurrence != 2 {
-                        return Err(anyhow!("Invalid AUDIO_HDRINFO table: audio_codec is not a non recurring I8."));
+                    if element_type != TABLE_ROW_TYPE_I8
+                        || element_recurrence != ELEMENT_RECURRENCE_NO
+                    {
+                        return Err(anyhow!(
+                            "Invalid AUDIO_HDRINFO table: audio_codec is not a non recurring I8."
+                        ));
                     }
 
                     let encoding = table_data[table_data_offset];
 
-                    hca_do_not_touch = encoding == 4;
+                    hca_do_not_touch = encoding == AUDIO_CODEC_HCA;
                     break;
                 }
             }
