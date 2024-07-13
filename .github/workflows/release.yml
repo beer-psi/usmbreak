@@ -2,11 +2,11 @@ name: Release
 
 on:
   release:
-    types: [created]
+    types: [created, published]
 
 jobs:
   release:
-    name: release (unix)
+    name: release for nix platforms
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
